@@ -4,47 +4,84 @@ Reusable Nix flake exposing Kubernetes, Lima/RKE2, and container tooling as `dar
 
 ## Architecture
 
+Each diagram below adds one layer to the previous one. Read top to bottom.
+
+### 1. The 30,000-foot view
+
 ```mermaid
 flowchart LR
-    subgraph consumer["Your nix-darwin config"]
-        direction TB
-        UF["flake.nix<br/>inputs.nix-k8s-lima.url"]
-        UE["services.k8s-lima.enable = true<br/>programs.k8s-lima.enable = true"]
-        UF --> UE
-    end
-
-    subgraph flake["nix-k8s-lima flake"]
-        direction TB
-        F[flake.nix]
-        DM["darwinModules.default<br/>(modules/darwin.nix)"]
-        HM["homeManagerModules.default<br/>(modules/home-manager.nix)"]
-        TPL["lima/rke2-lima.yaml.tmpl<br/>@kubeconfigPath@ placeholder"]
-        F --> DM
-        F --> HM
-        HM -. eval-time substitute .-> TPL
-    end
-
-    subgraph runtime["Activated machine"]
-        direction TB
-        PKG["System packages<br/>kubectl · k9s · lima · colima · stern · ..."]
-        BRE["Homebrew brews<br/>helm · awscli · eksctl · grafana"]
-        ZSH["~/.zshrc<br/>aliases (k, kgp, rke2-start, ...)<br/>zsh completions · k8s-help fn"]
-        YML["/nix/store/.../rke2-lima.yaml<br/>rendered, absolute paths baked in"]
-        VM[("RKE2 VM<br/>Lima + Ubuntu 22.04")]
-        ZSH -- "rke2-start uses" --> YML
-        YML -- "limactl boots" --> VM
-    end
-
-    UF ==>|"input"| F
-    UE -.->|"activates"| DM
-    UE -.->|"activates"| HM
-    DM ==> PKG
-    DM ==> BRE
-    HM ==> ZSH
-    HM ==> YML
+    A["Your nix-darwin config"] -->|"add as input,<br/>flip two enable flags"| B["nix-k8s-lima flake"]
+    B -->|"darwin-rebuild switch"| C["Activated machine<br/>(packages, aliases, VM definition)"]
 ```
 
-**Reading the diagram**: your nix-darwin config (left) pulls this flake in as an input and flips two `enable` switches. The flake (center) exposes a system module and a home-manager module — the home-manager module renders `rke2-lima.yaml.tmpl` at Nix eval time, substituting `@kubeconfigPath@` with the absolute path from `programs.k8s-lima.kubeconfigPath`. After `darwin-rebuild switch`, the right side is what's live on disk: packages in the system path, brews via Homebrew, shell aliases and the `k8s-help` function in `~/.zshrc`, and the rendered Lima yaml in the nix store. `rke2-start` invokes `limactl` against that yaml to boot the VM.
+A consumer (left) imports this flake and turns on two switches. After a rebuild, the machine has everything it needs to do local Kubernetes development.
+
+### 2. What's inside the flake
+
+```mermaid
+flowchart TB
+    F["flake.nix"]
+    F --> DM["darwinModules.default<br/>(system layer)"]
+    F --> HM["homeManagerModules.default<br/>(user layer)"]
+    DM -. imports .-> PKG["modules/packages.nix"]
+    DM -. imports .-> BRE["modules/homebrew-brews.nix"]
+    HM -. imports .-> ALI["modules/aliases.nix"]
+    HM -. imports .-> HLP["modules/help.nix"]
+    HM -. reads .-> TPL["lima/rke2-lima.yaml.tmpl"]
+```
+
+`flake.nix` exports exactly two things: a system module and a user module. Each module pulls in small helper files (packages, aliases, brew lists, the help function) so the module bodies themselves stay short and readable. The Lima yaml lives as a static template alongside.
+
+### 3. What the system module activates
+
+```mermaid
+flowchart LR
+    EN["services.k8s-lima.enable = true"] --> DM["darwinModules.default"]
+    DM ==> SYS["environment.systemPackages<br/>kubectl · k9s · lima · colima · stern · ..."]
+    DM ==> BREWS["homebrew.brews<br/>helm · awscli · eksctl · grafana"]
+```
+
+The system module is the simple one. Flip `enable` and you get a fixed list of Nix packages plus a list of Homebrew brews. `enableHomebrew = false` skips the brews; `extraPackages = [ pkgs.foo ]` appends. That's it.
+
+### 4. What the user module activates (and the eval-time substitution)
+
+```mermaid
+flowchart TB
+    EN["programs.k8s-lima.enable = true"] --> HM["homeManagerModules.default"]
+    HM ==> ZSH["~/.zshrc<br/>aliases · completions · k8s-help fn<br/>RKE2_KUBECONFIG auto-export"]
+
+    KCP["programs.k8s-lima.kubeconfigPath<br/>= /Users/you/.kube/rke2.yaml"]
+    TPL["lima/rke2-lima.yaml.tmpl<br/>(contains @kubeconfigPath@)"]
+    KCP --> SUB
+    TPL --> SUB(["pkgs.writeText +<br/>builtins.replaceStrings"])
+    SUB --> YML["/nix/store/.../rke2-lima.yaml<br/>copyToHost: /Users/you/.kube/rke2.yaml"]
+    HM -. references .-> YML
+```
+
+The user module is where the interesting work happens. It writes shell aliases, sources zsh completions, and defines `k8s-help` — all of that goes into `~/.zshrc`. Separately, at Nix eval time, it reads the Lima yaml template, substitutes `@kubeconfigPath@` with whatever the consumer set as `kubeconfigPath`, and writes the result to the nix store. Nix can do this because `kubeconfigPath` is a string known during evaluation. Lima itself can't — it doesn't expand shell variables inside yaml — which is why the substitution has to happen here.
+
+### 5. Runtime: what `rke2-start` actually does
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Shell as zsh
+    participant Lima as limactl
+    participant VM as Ubuntu VM
+    participant Host as ~/.kube/rke2.yaml
+
+    User->>Shell: rke2-start
+    Note over Shell: alias from ~/.zshrc:<br/>limactl start ... && chmod 600 ... && export KUBECONFIG=...
+    Shell->>Lima: limactl start /nix/store/.../rke2-lima.yaml
+    Lima->>VM: boot Ubuntu 22.04 + cloud-init
+    VM->>VM: install RKE2 v1.34.7 (~3-5 min)
+    VM->>VM: write /tmp/rke2/kubeconfig.yaml<br/>(server: https://127.0.0.1:6444)
+    VM->>Host: copyToHost (path baked in by §4 substitution)
+    Shell->>Host: chmod 600
+    Shell->>User: KUBECONFIG exported, kubectl ready
+```
+
+`rke2-start` is a single chained alias. The yaml it points at is the substituted derivation from §4 — its `copyToHost` field already contains your absolute kubeconfig path, so when Lima copies the file out it lands exactly where the alias expects to find it. The shell then tightens permissions and exports `KUBECONFIG` for the current session.
 
 ## What it provides
 
