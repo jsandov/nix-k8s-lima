@@ -23,7 +23,7 @@ Reusable Nix flake exposing Kubernetes, Lima/RKE2, and container tooling as `dar
 ```nix
 # flake.nix in your nix-darwin config
 {
-  inputs.nix-k8s-lima.url = "github:cloudvoyager/nix-k8s-lima";
+  inputs.nix-k8s-lima.url = "github:jsandov/nix-k8s-lima";
   inputs.nix-k8s-lima.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs = inputs@{ self, nix-darwin, nixpkgs, home-manager, nix-k8s-lima, ... }: {
