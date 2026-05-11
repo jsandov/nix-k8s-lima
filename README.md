@@ -2,6 +2,50 @@
 
 Reusable Nix flake exposing Kubernetes, Lima/RKE2, and container tooling as `darwinModules.default` and `homeManagerModules.default`. Drop into any nix-darwin config to get a full local-Kubernetes development environment with one input and two `enable = true` flags.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph consumer["Your nix-darwin config"]
+        direction TB
+        UF["flake.nix<br/>inputs.nix-k8s-lima.url"]
+        UE["services.k8s-lima.enable = true<br/>programs.k8s-lima.enable = true"]
+        UF --> UE
+    end
+
+    subgraph flake["nix-k8s-lima flake"]
+        direction TB
+        F[flake.nix]
+        DM["darwinModules.default<br/>(modules/darwin.nix)"]
+        HM["homeManagerModules.default<br/>(modules/home-manager.nix)"]
+        TPL["lima/rke2-lima.yaml.tmpl<br/>@kubeconfigPath@ placeholder"]
+        F --> DM
+        F --> HM
+        HM -. eval-time substitute .-> TPL
+    end
+
+    subgraph runtime["Activated machine"]
+        direction TB
+        PKG["System packages<br/>kubectl · k9s · lima · colima · stern · ..."]
+        BRE["Homebrew brews<br/>helm · awscli · eksctl · grafana"]
+        ZSH["~/.zshrc<br/>aliases (k, kgp, rke2-start, ...)<br/>zsh completions · k8s-help fn"]
+        YML["/nix/store/.../rke2-lima.yaml<br/>rendered, absolute paths baked in"]
+        VM[("RKE2 VM<br/>Lima + Ubuntu 22.04")]
+        ZSH -- "rke2-start uses" --> YML
+        YML -- "limactl boots" --> VM
+    end
+
+    UF ==>|"input"| F
+    UE -.->|"activates"| DM
+    UE -.->|"activates"| HM
+    DM ==> PKG
+    DM ==> BRE
+    HM ==> ZSH
+    HM ==> YML
+```
+
+**Reading the diagram**: your nix-darwin config (left) pulls this flake in as an input and flips two `enable` switches. The flake (center) exposes a system module and a home-manager module — the home-manager module renders `rke2-lima.yaml.tmpl` at Nix eval time, substituting `@kubeconfigPath@` with the absolute path from `programs.k8s-lima.kubeconfigPath`. After `darwin-rebuild switch`, the right side is what's live on disk: packages in the system path, brews via Homebrew, shell aliases and the `k8s-help` function in `~/.zshrc`, and the rendered Lima yaml in the nix store. `rke2-start` invokes `limactl` against that yaml to boot the VM.
+
 ## What it provides
 
 **System layer (`darwinModules.default`):**
