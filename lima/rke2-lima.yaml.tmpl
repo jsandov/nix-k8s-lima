@@ -1,0 +1,68 @@
+# Lima configuration for RKE2 Kubernetes cluster
+# This creates a lightweight VM running RKE2 for local development.
+#
+# This file is a template — `@kubeconfigPath@` is substituted at Nix eval time
+# by `programs.k8s-lima.kubeconfigPath` (defaults to ~/.kube/rke2.yaml resolved
+# to an absolute path).
+
+# VM specs
+cpus: 4
+memory: "8GiB"
+disk: "30GiB"
+
+# Use recent Ubuntu LTS
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# Mount home directory for easy file access
+mounts:
+  - location: "~"
+    writable: false
+
+# Install RKE2
+# mode: system runs via cloud-init runcmd (blocks lima boot until complete);
+# mode: boot would use bootcmd, which doesn't block copyToHost and runs under
+# /bin/sh (dash) where `set -o pipefail` is a syntax error. Stay on system.
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eux
+
+      # Install RKE2 (pinned for reproducibility)
+      curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION=v1.34.7+rke2r1 sh -
+
+      # Enable and start RKE2
+      systemctl enable rke2-server.service
+      systemctl start rke2-server.service
+
+      # Wait for RKE2 to be ready
+      until systemctl is-active rke2-server.service; do
+        sleep 2
+      done
+
+      # Wait for kubeconfig to be created
+      until [ -f /etc/rancher/rke2/rke2.yaml ]; do
+        sleep 2
+      done
+
+      # Make kubeconfig readable and copy to shared location
+      mkdir -p /tmp/rke2
+      cp /etc/rancher/rke2/rke2.yaml /tmp/rke2/kubeconfig.yaml
+      chmod 600 /tmp/rke2/kubeconfig.yaml
+
+      # Rewrite kubeconfig server URL to match the host-forwarded port (6444)
+      sed -i 's|server: https://127.0.0.1:6443|server: https://127.0.0.1:6444|g' /tmp/rke2/kubeconfig.yaml
+
+# Forward the Kubernetes API port (6444 on host avoids collision with Colima/K3s on 6443)
+portForwards:
+  - guestPort: 6443
+    hostPort: 6444
+
+# Copy kubeconfig from guest to host
+copyToHost:
+  - guest: "/tmp/rke2/kubeconfig.yaml"
+    host: "@kubeconfigPath@"
