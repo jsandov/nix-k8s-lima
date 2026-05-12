@@ -4,46 +4,29 @@
 let
   cfg = config.programs.k8s-lima;
 
-  # Render the Lima VM YAML with the consumer's kubeconfigPath substituted in.
-  # Lima reads the file from the nix store, so $HOME-style shell vars wouldn't
-  # work — kubeconfigPath must be a concrete absolute path at eval time.
-  limaYaml = pkgs.writeText "rke2-lima.yaml" (
-    builtins.replaceStrings
-      [ "@kubeconfigPath@" ]
-      [ cfg.kubeconfigPath ]
-      (builtins.readFile "${self}/lima/rke2-lima.yaml.tmpl")
-  );
-
-  aliases = import ./aliases.nix {
-    limaYamlPath = cfg.limaYamlPath;
-    inherit (cfg) kubeconfigPath;
+  scripts = import ./scripts.nix {
+    inherit pkgs self;
+    kubeconfigPathDefault = cfg.kubeconfigPath;
   };
 
-  helpSnippet = import ./help.nix;
+  aliases = import ./aliases.nix { inherit (cfg) kubeconfigPath; };
 in
 {
   options.programs.k8s-lima = {
-    enable = lib.mkEnableOption "k8s-lima shell integration (aliases, completions, k8s-help)";
+    enable = lib.mkEnableOption "k8s-lima shell integration (scripts on PATH, aliases, completions)";
 
     kubeconfigPath = lib.mkOption {
       type = lib.types.str;
       default = "${config.home.homeDirectory}/.kube/rke2.yaml";
       description = ''
         Absolute path on the host where Lima's copyToHost will deposit the
-        RKE2 kubeconfig, and where shell aliases will look for it. Must be
-        an absolute path (no $HOME or ~) because Lima reads the YAML from
-        the nix store and does not expand shell variables.
-      '';
-    };
+        RKE2 kubeconfig, and where shell aliases and scripts will look for it.
+        Must be an absolute path (no $HOME or ~) — the rke2-start script reads
+        the Lima yaml template and substitutes this value into the copyToHost
+        field at runtime via sed.
 
-    limaYamlPath = lib.mkOption {
-      type = lib.types.str;
-      default = "${limaYaml}";
-      description = ''
-        Path to the Lima VM YAML used by `rke2-start`. Defaults to the
-        flake-provided template (immutable, in nix store). Override with a
-        path to a writable working copy if you want to hot-edit:
-          programs.k8s-lima.limaYamlPath = "/path/to/rke2-lima.yaml";
+        CLI users (without home-manager) override this per-invocation by setting
+        the RKE2_KUBECONFIG_PATH environment variable.
       '';
     };
 
@@ -57,25 +40,28 @@ in
   config = lib.mkIf cfg.enable {
     programs.zsh.enable = true;
 
+    # Install all wrapped scripts (rke2-start, rke2-stop, k8s-help, etc.) onto
+    # the user's PATH. These are the same derivations exposed via the flake's
+    # apps/packages outputs — single source of truth across in-shell and CLI use.
+    home.packages = builtins.attrValues scripts;
+
+    # The kubectl shortcuts and Colima k8s-* aliases stay as zero-overhead
+    # aliases. rke2-start gets a thin alias wrapper that chains a KUBECONFIG
+    # export onto the script (since a script can't export to its parent shell).
     home.shellAliases = aliases;
 
-    programs.zsh.initContent = lib.mkMerge [
-      (lib.mkIf cfg.enableCompletions ''
-        # Completions for K8s/Lima tooling (fuzzy via fzf-tab if installed)
-        source <(eksctl completion zsh)
-        source <(kind completion zsh)
-        source <(limactl completion zsh)
-      '')
-      ''
-        # Auto-export RKE2_KUBECONFIG if Lima has copied a kubeconfig to the host.
-        # Consumers can opt into RKE2 with `export KUBECONFIG=$RKE2_KUBECONFIG`
-        # or the `rke2-kubeconfig` alias; this keeps any pre-existing default
-        # (e.g. Colima/K3s) as the active context.
-        if [ -f "${cfg.kubeconfigPath}" ]; then
-          export RKE2_KUBECONFIG="${cfg.kubeconfigPath}"
-        fi
-      ''
-      helpSnippet
-    ];
+    programs.zsh.initContent = lib.mkIf cfg.enableCompletions ''
+      # Completions for K8s/Lima tooling (fuzzy via fzf-tab if installed)
+      source <(eksctl completion zsh)
+      source <(kind completion zsh)
+      source <(limactl completion zsh)
+
+      # Auto-export RKE2_KUBECONFIG if Lima has copied a kubeconfig to the host.
+      # K3s/Colima remains the default kubectl target; opt into RKE2 with
+      # `export KUBECONFIG=$RKE2_KUBECONFIG` or the rke2-kubeconfig alias.
+      if [ -f "${cfg.kubeconfigPath}" ]; then
+        export RKE2_KUBECONFIG="${cfg.kubeconfigPath}"
+      fi
+    '';
   };
 }

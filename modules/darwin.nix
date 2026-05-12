@@ -22,6 +22,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Lima 1.0.7 is flagged "insecure" in nixpkgs. Accept it for consumers so
+    # they don't have to set this themselves. (Lists merge across modules, so
+    # this is additive to whatever the consumer has already set.)
+    nixpkgs.config.permittedInsecurePackages = [ "lima-1.0.7" ];
+
     environment.systemPackages =
       (import ./packages.nix { inherit pkgs; }) ++ cfg.extraPackages;
 
