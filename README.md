@@ -2,65 +2,36 @@
 
 Reusable Nix flake for local Kubernetes development on macOS. Bundles `kubectl`, `k9s`, `lima`, `colima`, `stern`, `popeye`, and friends, plus a one-command Lima VM that boots an RKE2 cluster.
 
-**Use it three ways:**
+## Quickstart
 
-| You have | What you do |
-|---|---|
-| `nix-darwin` + `home-manager` | Import the modules, flip two `enable` flags |
-| Just Nix (no nix-darwin) | `nix shell github:jsandov/nix-k8s-lima` for a one-off session, or `nix profile install` to make it persistent |
-| Just want to boot a cluster | `nix run github:jsandov/nix-k8s-lima#rke2-start` |
+### CLI — no nix-darwin needed
 
-## Architecture
-
-For a deep dive into how the modules, scripts, and CLI surface wire together, see **[ARCHITECTURE.md](./ARCHITECTURE.md)** — six progressive diagrams covering the build-time exports, both module activation paths, the standalone CLI usage, and the runtime flow of `rke2-start`.
-
-## CLI usage
+Boot a cluster in three commands (first run takes ~5-10 min for image download + RKE2 install; subsequent boots are ~1 min):
 
 ```sh
-# One-off shell with the full toolset (kubectl, k9s, lima, colima, stern,
-# popeye, kind, helm, dive, lazydocker, plus rke2-start & friends on PATH)
-nix shell github:jsandov/nix-k8s-lima
-
-# Default app prints the quickstart docs
-nix run github:jsandov/nix-k8s-lima
-
-# Boot the RKE2 cluster (~5-10 min on first boot, ~1 min after)
 nix run github:jsandov/nix-k8s-lima#rke2-start
-
-# Inspect / stop / restart / delete
-nix run github:jsandov/nix-k8s-lima#rke2-status
-nix run github:jsandov/nix-k8s-lima#rke2-stop
-nix run github:jsandov/nix-k8s-lima#rke2-restart
-nix run github:jsandov/nix-k8s-lima#rke2-delete
-
-# Wire kubectl to the cluster (script prints `export KUBECONFIG=...`,
-# eval applies it in your current shell)
 eval "$(nix run github:jsandov/nix-k8s-lima#rke2-kubeconfig)"
-
-# Or persistent install — toolset stays on PATH between sessions
-nix profile install github:jsandov/nix-k8s-lima
-
-# Dev shell with welcome banner
-nix develop github:jsandov/nix-k8s-lima
+kubectl get nodes
 ```
 
-### Per-invocation tuning
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `RKE2_KUBECONFIG_PATH` | `$HOME/.kube/rke2.yaml` | Where Lima copies the kubeconfig to, and where rke2-kubeconfig points |
-| `RKE2_LIMA_YAML_TMPL` | flake-provided template | Override to a writable working copy if you want to hot-edit the Lima yaml |
-
-Example:
+Or drop into a one-off shell with the full toolset on PATH:
 
 ```sh
-RKE2_KUBECONFIG_PATH=/tmp/cluster-a.yaml nix run github:jsandov/nix-k8s-lima#rke2-start
+nix shell github:jsandov/nix-k8s-lima
+k8s-help              # quickstart + command reference
 ```
 
-## Module usage (nix-darwin + home-manager)
+To make it persistent (toolset always on PATH):
+
+```sh
+nix profile install github:jsandov/nix-k8s-lima
+```
+
+### nix-darwin + home-manager
+
+Add the input, import both modules, flip both `enable` flags:
 
 ```nix
-# flake.nix in your nix-darwin config
 {
   inputs.nix-k8s-lima.url = "github:jsandov/nix-k8s-lima";
   inputs.nix-k8s-lima.inputs.nixpkgs.follows = "nixpkgs";
@@ -84,9 +55,42 @@ RKE2_KUBECONFIG_PATH=/tmp/cluster-a.yaml nix run github:jsandov/nix-k8s-lima#rke
 }
 ```
 
-### Module options
+After `darwin-rebuild switch`, the `rke2-*` / `k8s-*` / `k` / `kgp` / `k8s-help` commands are live in any new shell.
 
-#### `services.k8s-lima` (system)
+## CLI in depth
+
+```sh
+# Default app prints the quickstart docs
+nix run github:jsandov/nix-k8s-lima
+
+# Cluster lifecycle
+nix run github:jsandov/nix-k8s-lima#rke2-start
+nix run github:jsandov/nix-k8s-lima#rke2-status
+nix run github:jsandov/nix-k8s-lima#rke2-stop
+nix run github:jsandov/nix-k8s-lima#rke2-restart
+nix run github:jsandov/nix-k8s-lima#rke2-delete
+
+# Wire kubectl to the cluster (script prints `export KUBECONFIG=...`)
+eval "$(nix run github:jsandov/nix-k8s-lima#rke2-kubeconfig)"
+
+# Dev shell with welcome banner
+nix develop github:jsandov/nix-k8s-lima
+```
+
+### Per-invocation tuning
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `RKE2_KUBECONFIG_PATH` | `$HOME/.kube/rke2.yaml` | Where Lima copies the kubeconfig to, and where `rke2-kubeconfig` points |
+| `RKE2_LIMA_YAML_TMPL` | flake-provided template | Override to a writable working copy if you want to hot-edit the Lima yaml |
+
+```sh
+RKE2_KUBECONFIG_PATH=/tmp/cluster-a.yaml nix run github:jsandov/nix-k8s-lima#rke2-start
+```
+
+## Module options
+
+### `services.k8s-lima` (nix-darwin)
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
@@ -94,13 +98,17 @@ RKE2_KUBECONFIG_PATH=/tmp/cluster-a.yaml nix run github:jsandov/nix-k8s-lima#rke
 | `enableHomebrew` | bool | `true` | Add awscli/helm/eksctl/grafana to `homebrew.brews` |
 | `extraPackages` | list of pkg | `[]` | Extra Nix packages to install alongside the defaults |
 
-#### `programs.k8s-lima` (home-manager)
+### `programs.k8s-lima` (home-manager)
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
 | `enable` | bool | `false` | Master switch for scripts on PATH + aliases + completions |
 | `kubeconfigPath` | str | `${config.home.homeDirectory}/.kube/rke2.yaml` | Absolute host path baked in as the script default. CLI users override via `$RKE2_KUBECONFIG_PATH`. Must be absolute (no `$HOME` or `~`). |
 | `enableCompletions` | bool | `true` | Source eksctl/kind/limactl zsh completions |
+
+## Architecture
+
+For a deep dive into how the modules, scripts, and CLI surface wire together, see **[ARCHITECTURE.md](./ARCHITECTURE.md)** — six progressive diagrams covering the build-time exports, both module activation paths, the standalone CLI usage, and the runtime flow of `rke2-start`.
 
 ## What's in the box
 
