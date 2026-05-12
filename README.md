@@ -2,6 +2,13 @@
 
 Reusable Nix flake for local Kubernetes development on macOS. Bundles `kubectl`, `k9s`, `lima`, `colima`, `stern`, `popeye`, and friends, plus a one-command Lima VM that boots an RKE2 cluster.
 
+## Requirements
+
+- **macOS** (Apple Silicon or Intel) — Lima/Colima are mac-only
+- **Nix with flakes enabled** — that's the entire bar for the CLI path
+- **(Optional) `nix-darwin` + `home-manager`** — only needed if you want the module path; you bring your own inputs (this flake doesn't pull them in)
+- **nixpkgs `25.05-darwin`** — the flake is pinned to this branch; consumers should `follows` it
+
 ## Quickstart
 
 ### CLI — no nix-darwin needed
@@ -121,10 +128,6 @@ For a deep dive into how the modules, scripts, and CLI surface wire together, se
 **Shell aliases (home-manager only):** `k`/`kgp`/`kgs`/`kgd`/`kgn`/`kdp`/`kds`/`kl`/`kx`/`kn` (kubectl), `k8s-start`/`stop`/`restart`/`status`/`delete` (Colima)
 
 **Static assets:** `lima/rke2-lima.yaml.tmpl` (Lima VM definition — Ubuntu 22.04, RKE2 v1.34.7, host port 6444 to avoid colliding with Colima on 6443), `manifests/alpine-pod.yaml` (trivial test pod)
-
-## Requirements
-
-You bring your own `nix-darwin` and `home-manager` inputs — this flake only exposes module values for those code paths. nixpkgs is pinned to `nixpkgs-25.05-darwin`; consumers should `follows` it. CLI usage has no Nix-side requirements beyond a working flake-enabled Nix install.
 
 ## License
 
