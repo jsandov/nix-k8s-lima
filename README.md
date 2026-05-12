@@ -36,12 +36,12 @@ flowchart TB
     F --> DEV["devShells.&lt;system&gt;.default"]
 
     SCRIPTS["modules/scripts.nix<br/>writeShellApplication wrappers<br/>(rke2-start, k8s-help, ...)"]
-    PKGS -. bundles .-> SCRIPTS
-    APPS -. each app wraps one .-> SCRIPTS
-    DEV -. provides .-> SCRIPTS
-    MODS -. installs into home.packages .-> SCRIPTS
+    PKGS -.->|"bundles"| SCRIPTS
+    APPS -.->|"each app wraps one"| SCRIPTS
+    DEV -.->|"provides"| SCRIPTS
+    MODS -.->|"installs as home.packages"| SCRIPTS
 
-    SCRIPTS -. reads at runtime .-> TPL["lima/rke2-lima.yaml.tmpl"]
+    SCRIPTS -.->|"reads at runtime"| TPL["lima/rke2-lima.yaml.tmpl"]
 ```
 
 `flake.nix` exports four kinds of things: **modules** (for nix-darwin/home-manager), **packages** (for `nix shell` / `nix profile install`), **apps** (for `nix run`), and **devShells** (for `nix develop`). The interesting bit is the dotted edges: every consumer path eventually pulls from the same `modules/scripts.nix`. That file produces a small set of `writeShellApplication` derivations — one per command — and they are the single source of truth. CLI users invoke them via `nix run`; module users get them installed into `home.packages`. There is no separate "CLI version" to keep in sync.
