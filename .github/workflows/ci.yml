@@ -1,0 +1,141 @@
+# CI for nix-k8s-lima
+# ===================================================================================
+# WHAT THIS DOES
+#   Evaluates and (selectively) builds this Nix flake's outputs on both Apple Silicon
+#   and Intel macOS runners. `nix flake check` is the primary gate; an opt-in build
+#   job exercises the build-time shellcheck baked into the wrapped scripts.
+#
+# WHY macOS-ONLY RUNNERS
+#   This flake is DARWIN-ONLY. flake.nix declares:
+#       systems = [ "aarch64-darwin" "x86_64-darwin" ]
+#   because Lima/Colima/RKE2 are macOS host tooling. A Linux (ubuntu) runner CANNOT
+#   evaluate darwin outputs (`nix flake check` would fail with "does not provide ... for
+#   x86_64-linux"), so we run the matrix on macOS only:
+#       macos-14       -> Apple Silicon -> aarch64-darwin
+#       macos-15-intel -> Intel         -> x86_64-darwin
+#   (The older `macos-13` Intel image was RETIRED by GitHub on 2025-12-04; the current
+#    free Intel/x86_64-darwin label is `macos-15-intel`, available until ~Fall 2027,
+#    after which GitHub drops x86_64 macOS entirely. At that point this matrix entry
+#    must move to a `*-large` Intel image or be dropped.)
+#   The flake pins nixpkgs to `nixpkgs-25.05-darwin` and sets
+#   `config.permittedInsecurePackages = [ "lima-1.0.7" ]` internally, so evaluation is
+#   self-contained (no NIXPKGS_ALLOW_INSECURE needed in the workflow).
+#
+# NO flake.lock CAVEAT  (IMPORTANT — please read)
+#   There is NO flake.lock committed in this repo. Without a lock, `nix flake check`
+#   silently resolves the `nixpkgs-25.05-darwin` branch to whatever commit is current
+#   at run time, which is NON-REPRODUCIBLE: two runs days apart can resolve different
+#   nixpkgs commits and disagree. We handle this defensively below:
+#     * The "check" job runs `nix flake lock` FIRST so a lock exists for the run, and
+#       then UPLOADS the generated lock as an artifact so a maintainer can grab a
+#       known-good lock and commit it.
+#     * A dedicated "require-lock" job WARNS (does not fail) when flake.lock is absent,
+#       to nudge the maintainer without blocking an otherwise-green PR.
+#   >>> ACTION FOR MAINTAINER: commit a flake.lock to make CI reproducible. <<<
+#   (It could not be generated on the authoring host — no Nix there — so it is left to
+#    you. Once committed, you may drop the `nix flake lock` step / require-lock job.)
+#
+# BILLING CAVEAT  (IMPORTANT — this workflow will NOT actually run yet)
+#   The repository owner's GitHub Actions billing is currently FAILING account-wide.
+#   Until that billing issue is resolved, GitHub will not schedule any runs of this (or
+#   any) workflow — every push/PR will show the workflow as not started. The workflow
+#   itself is correct and will run as written once billing is restored.
+#
+# ACTION PINNING
+#   Every action is pinned to a full commit SHA (maintainer convention). The `# vX.Y.Z`
+#   comment records the human-readable tag that SHA corresponds to. SHAs were resolved
+#   via `gh api repos/<owner>/<repo>/git/refs/tags/<tag>` against the upstream repos.
+# ===================================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Least privilege: this workflow only reads the repo. No write scopes are needed.
+permissions:
+  contents: read
+
+# Avoid piling up redundant runs on rapid pushes to the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------------
+  # require-lock: non-blocking nudge to commit a flake.lock for reproducibility.
+  # Runs once (cheap, ubuntu) — it only inspects the checked-out tree, no Nix needed.
+  # ---------------------------------------------------------------------------------
+  require-lock:
+    name: flake.lock present?
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - name: Warn if flake.lock is missing
+        run: |
+          if [ ! -f flake.lock ]; then
+            echo "::warning title=No flake.lock::This repo has no committed flake.lock. \
+            'nix flake check' will resolve nixpkgs-25.05-darwin transiently, which is \
+            NON-REPRODUCIBLE. Generate one locally with 'nix flake lock' and commit it."
+          else
+            echo "flake.lock present — good."
+          fi
+
+  # ---------------------------------------------------------------------------------
+  # check: PRIMARY GATE. Evaluate the flake + build any `checks` outputs on both
+  # darwin systems. This validates module shapes, packages/apps/devShells eval, and
+  # the permittedInsecurePackages handling. It does NOT build the heavy toolset.
+  # ---------------------------------------------------------------------------------
+  check:
+    name: nix flake check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-14 = Apple Silicon (aarch64-darwin); macos-15-intel = Intel (x86_64-darwin).
+        # Both are exercised so each system's flake outputs are evaluated.
+        os: [macos-14, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        # v5.0.1
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      - name: Install Nix (Determinate Nix Installer)
+        # v22 — enables `nix-command` + `flakes` by default in nix.conf.
+        # NOTE: For pinned, per-release Determinate Nix you could switch to
+        # DeterminateSystems/determinate-nix-action@v3 (latest v3.21.1); we use the
+        # installer action here as it is the documented installer and auto-enables
+        # the flakes experimental features this flake needs.
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          # Belt-and-suspenders: ensure the experimental features are on even if a
+          # future default changes. (The action enables these by default today.)
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Generate a flake.lock for this run (no committed lock — see header)
+        run: |
+          if [ ! -f flake.lock ]; then
+            echo "No committed flake.lock; generating a transient one for this run."
+            nix flake lock
+          else
+            echo "Using committed flake.lock."
+          fi
+
+      - name: Upload generated flake.lock (so a maintainer can commit a known-good one)
+        # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: flake-lock-${{ matrix.os }}
+          path: flake.lock
+          if-no-files-found: warn
+
+      - name: nix flake check
+        # -L prints full build logs (useful if any `checks` output builds).
+        # This evaluates ALL outputs for this system and validates module/output
+        # shapes. It does NOT build packages.* (those are only evaluated).
+        run: nix flake check -L

@@ -10,6 +10,7 @@
   pkgs.lima             # Lightweight VM manager for running Linux VMs (supports RKE2)
 
   # Kubernetes tools
+  pkgs.kubernetes-helm  # Helm package manager (nix-native; used by the ai-gw-* gateway install)
   pkgs.k9s              # Interactive TUI for K8s clusters (best for real-time monitoring)
   pkgs.kubectl          # Main K8s CLI (official Kubernetes command-line tool)
   pkgs.kubectx          # Context and namespace switching (includes kubens)

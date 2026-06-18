@@ -67,6 +67,14 @@
           rke2-delete      = mkApp "rke2-delete";
           rke2-kubeconfig  = mkApp "rke2-kubeconfig";
           k8s-help         = mkApp "k8s-help";
+
+          # Local Claude Code AI gateway (kind + Envoy AI Gateway → Anthropic).
+          ai-gw-up         = mkApp "ai-gw-up";
+          ai-gw-down       = mkApp "ai-gw-down";
+          ai-gw-status     = mkApp "ai-gw-status";
+          ai-gw-logs       = mkApp "ai-gw-logs";
+          ai-gw-claude-env = mkApp "ai-gw-claude-env";
+
           default          = mkApp "k8s-help";
         }
       );
