@@ -1,0 +1,124 @@
+# Anthropic routing for the local Claude Code AI gateway.
+# Envoy AI Gateway native Anthropic provider → api.anthropic.com.
+# Applied by `ai-gw-up`. Adapted from envoyproxy/ai-gateway examples/basic/{basic,anthropic}.yaml.
+#
+# NOTE: the API-key Secret is intentionally NOT in this file. `ai-gw-up` creates
+# `ai-gw-anthropic-apikey` from $ANTHROPIC_GATEWAY_API_KEY so a real sk-ant-... key
+# never lands in git.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: ai-gw
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ai-gw
+  namespace: default
+spec:
+  gatewayClassName: ai-gw
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: ai-gw
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: ai-gw
+  namespace: default
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        container:
+          resources: {}
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIGatewayRoute
+metadata:
+  name: ai-gw-anthropic
+  namespace: default
+spec:
+  parentRefs:
+    - name: ai-gw
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  rules:
+    # Envoy AI Gateway extracts the model from the request body into the
+    # `x-ai-eg-model` header BEFORE route matching, so this matches Claude Code
+    # traffic (Claude Code sends `model` in the JSON body, not as a header).
+    # RegularExpression catches every Claude model Claude Code uses (sonnet for
+    # the main loop, haiku for background tasks, etc.).
+    # If your pinned AI-GW version rejects regex header matches, replace this with
+    # one `type: Exact` rule per model you use.
+    - matches:
+        - headers:
+            - type: RegularExpression
+              name: x-ai-eg-model
+              value: "claude.*"
+      backendRefs:
+        - name: ai-gw-anthropic
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: AIServiceBackend
+metadata:
+  name: ai-gw-anthropic
+  namespace: default
+spec:
+  schema:
+    name: Anthropic
+  backendRef:
+    name: ai-gw-anthropic
+    kind: Backend
+    group: gateway.envoyproxy.io
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: ai-gw-anthropic
+  namespace: default
+spec:
+  endpoints:
+    - fqdn:
+        hostname: api.anthropic.com
+        port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1alpha3
+kind: BackendTLSPolicy
+metadata:
+  name: ai-gw-anthropic-tls
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: ai-gw-anthropic
+  validation:
+    wellKnownCACertificates: System
+    hostname: api.anthropic.com
+---
+apiVersion: aigateway.envoyproxy.io/v1beta1
+kind: BackendSecurityPolicy
+metadata:
+  name: ai-gw-anthropic-apikey
+  namespace: default
+spec:
+  targetRefs:
+    - group: aigateway.envoyproxy.io
+      kind: AIServiceBackend
+      name: ai-gw-anthropic
+  type: AnthropicAPIKey
+  anthropicAPIKey:
+    secretRef:
+      name: ai-gw-anthropic-apikey
+      namespace: default
